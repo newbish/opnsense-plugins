@@ -19,25 +19,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          persist-credentials: false
-
-      - name: Sign packagesite.yaml
-        run: |
-          PRIVATE_KEY="${{ secrets.PRIVATE_KEY }}"
-          if [ -z "$PRIVATE_KEY" ]; then
-            echo "No private key found, skipping signing."
-            exit 0
-          fi
-          openssl dgst -sha256 -sign <(echo "$PRIVATE_KEY") -out packagesite.yaml.sig packagesite.yaml
-          openssl rsa -in <(echo "$PRIVATE_KEY") -pubout -out packagesite.yaml.pub
-
-      - name: Create packagesite.txz
-        run: |
-          tar -cJf packagesite.txz packagesite.yaml packagesite.yaml.sig packagesite.yaml.pub
-
-      - name: Create packagesite.pgk
-        run: |
-          tar -cvzf packagesite.pkg packagesite.yaml packagesite.yaml.sig packagesite.yaml.pub
+          token: ${{ secrets.GH_PAT }}
 
       - name: Configure Git
         run: |
@@ -45,13 +27,47 @@ jobs:
           git config user.email "actions@github.com"
           echo "Git configured with bot user."
 
-      - name: Add and Commit
+      - name: Loop through directories
+        id: loop
         run: |
-          git add packagesite.pkg packagesite.txz
+          PRIVATE_KEY="${{ secrets.PRIVATE_KEY }}"
+          if [ -z "$PRIVATE_KEY" ]; then
+            echo "No private key found, skipping signing."
+            exit 0
+          fi
+          echo "Directories to process:"
+          for dir in FreeBSD*/; do
+            echo "Processing directory: $dir"
+            if [ -d "$dir" ]; then
+              cd "$dir"
+              echo "Signing meta in $dir"
+              openssl dgst -sha256 -sign <(echo "$PRIVATE_KEY") -out "meta.sig" "meta"
+              echo "Signing packagesite.yaml in $dir"
+              openssl dgst -sha256 -sign <(echo "$PRIVATE_KEY") -out "packagesite.yaml.sig" "packagesite.yaml"
+
+              echo "Generating public key for $dir"
+              openssl rsa -in <(echo "$PRIVATE_KEY") -pubout -out "meta.pub"
+              openssl rsa -in <(echo "$PRIVATE_KEY") -pubout -out "packagesite.yaml.pub"
+              
+              echo "Creating packagesite.txz and packagesite.pkg in $dir"
+              tar -cJf "meta.txz" "meta" "meta.sig" "meta.pub"
+              tar -cJf "packagesite.txz" "packagesite.yaml" "packagesite.yaml.sig" "packagesite.yaml.pub"
+              tar -cvzf "packagesite.pkg" "packagesite.yaml" "packagesite.yaml.sig" "packagesite.yaml.pub"
+
+              echo "Adding files to git in $dir"
+              git add "meta.txz" "packagesite.pkg" "packagesite.txz"
+              cd ..
+            else
+              echo "No directory found."
+            fi
+          done
+
+      - name: Commit
+        run: |
           git commit -m " chore(auto): Add packagesite.pkg and packagesite.txz [skip ci]" || echo "No changes to commit"
           echo "File added and committed."
 
       - name: Push changes
         run: |
-          git push origin HEAD:${{ github.ref }}
+          git push "https://${{ github.actor }}:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git" HEAD:${{ github.ref }}
           echo "Changes pushed to repository."
