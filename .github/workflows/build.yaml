@@ -1,0 +1,57 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Build, Release
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Sign packagesite.yaml
+        run: |
+          PRIVATE_KEY="${{ secrets.PRIVATE_KEY }}"
+          if [ -z "$PRIVATE_KEY" ]; then
+            echo "No private key found, skipping signing."
+            exit 0
+          fi
+          openssl dgst -sha256 -sign <(echo "$PRIVATE_KEY") -out packagesite.yaml.sig packagesite.yaml
+          openssl rsa -in <(echo "$PRIVATE_KEY") -pubout -out packagesite.yaml.pub
+
+      - name: Create packagesite.txz
+        run: |
+          tar -cJf packagesite.txz packagesite.yaml packagesite.yaml.sig packagesite.yaml.pub
+
+      - name: Create packagesite.pgk
+        run: |
+          tar -cvzf packagesite.pkg packagesite.yaml packagesite.yaml.sig packagesite.yaml.pub
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          echo "Git configured with bot user."
+
+      - name: Add and Commit
+        run: |
+          git add packagesite.pkg packagesite.txz
+          git commit -m " chore(auto): Add packagesite.pkg and packagesite.txz [skip ci]" || echo "No changes to commit"
+          echo "File added and committed."
+
+      - name: Push changes
+        run: |
+          git push origin HEAD:${{ github.ref }}
+          echo "Changes pushed to repository."
