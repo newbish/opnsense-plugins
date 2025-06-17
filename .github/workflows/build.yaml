@@ -5,15 +5,34 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'build-list.json'
+      - '.github/workflows/build.yaml'
 
 concurrency:
   group: ${{ github.ref }}-${{ github.workflow }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  setup:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      build_list: '${{ steps.read.outputs.build_list }}'
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Read Build List
+      id: read
+      run: |
+        echo "build_list=$(jq -c . < build-list.json)"
+        echo "build_list=$(jq -c . < build-list.json)" >> "$GITHUB_OUTPUT"
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: setup
 
     steps:
       - name: Checkout Code
@@ -27,47 +46,96 @@ jobs:
           git config user.email "actions@github.com"
           echo "Git configured with bot user."
 
-      - name: Loop through directories
-        id: loop
+      - name: Checkout Opnsense Plugin Repository
+        uses: actions/checkout@v4
+        with:
+          repository: opnsense/plugins
+          path: plugin
+
+      - name: Checkout Plugin Repository
+        uses: actions/checkout@v4
+        with :
+          repository: spasecookee/opnsense-speedtest
+          persist-credentials: false
+          path: plugin/custom/speedtest
+          ref: main
+
+      - name: Build Plugins
+        uses: vmactions/freebsd-vm@v1
+        with:
+          sync: nfs
+          copyback: false
+          run: |
+            echo "Building plugins..."
+            # Assuming you have a build script or command to build your plugins
+            # Replace the following line with your actual build command
+            cd $GITHUB_WORKSPACE
+            cd plugin/custom/speedtest
+            make
+            ls work
+            cp work/pkg/os-*.txz ../../latest/
+            cd ../..
+
+      - name: Add Latest Packages
         run: |
-          PRIVATE_KEY="${{ secrets.PRIVATE_KEY }}"
-          if [ -z "$PRIVATE_KEY" ]; then
-            echo "No private key found, skipping signing."
-            exit 0
-          fi
-          echo "Directories to process:"
-          for dir in FreeBSD*/; do
-            echo "Processing directory: $dir"
-            if [ -d "$dir" ]; then
-              cd "$dir"
-              echo "Signing meta in $dir"
-              openssl dgst -sha256 -sign <(echo "$PRIVATE_KEY") -out "meta.sig" "meta"
-              echo "Signing packagesite.yaml in $dir"
-              openssl dgst -sha256 -sign <(echo "$PRIVATE_KEY") -out "packagesite.yaml.sig" "packagesite.yaml"
+          echo "Adding latest packages..."
+          git add latest/os-*.txz
 
-              echo "Generating public key for $dir"
-              openssl rsa -in <(echo "$PRIVATE_KEY") -pubout -out "meta.pub"
-              openssl rsa -in <(echo "$PRIVATE_KEY") -pubout -out "packagesite.yaml.pub"
-              
-              echo "Creating packagesite.txz and packagesite.pkg in $dir"
-              tar -cJf "meta.txz" "meta" "meta.sig" "meta.pub"
-              tar -cJf "packagesite.txz" "packagesite.yaml" "packagesite.yaml.sig" "packagesite.yaml.pub"
-              tar -cvzf "packagesite.pkg" "packagesite.yaml" "packagesite.yaml.sig" "packagesite.yaml.pub"
-
-              echo "Adding files to git in $dir"
-              git add "meta.txz" "packagesite.pkg" "packagesite.txz"
-              cd ..
-            else
-              echo "No directory found."
-            fi
-          done
-
-      - name: Commit
+      - name: Commit Changes
         run: |
-          git commit -m " chore(auto): Add packagesite.pkg and packagesite.txz [skip ci]" || echo "No changes to commit"
-          echo "File added and committed."
+          git commit -m "chore(auto): Add latest packages [skip ci]" || echo
 
       - name: Push changes
         run: |
           git push "https://${{ github.actor }}:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git" HEAD:${{ github.ref }}
           echo "Changes pushed to repository."
+
+      # - name: Commit
+      #   run: |
+      #     git commit -m " chore(auto): Add packagesite.pkg and packagesite.txz [skip ci]" || echo "No changes to commit"
+      #     echo "File added and committed."
+
+      # - name: Loop through directories
+      #   id: loop
+      #   run: |
+      #     PRIVATE_KEY="${{ secrets.PRIVATE_KEY }}"
+      #     if [ -z "$PRIVATE_KEY" ]; then
+      #       echo "No private key found, skipping signing."
+      #       exit 0
+      #     fi
+      #     echo "Directories to process:"
+      #     for dir in FreeBSD*/; do
+      #       echo "Processing directory: $dir"
+      #       if [ -d "$dir" ]; then
+      #         cd "$dir"
+      #         echo "Signing meta in $dir"
+      #         openssl dgst -sha256 -sign <(echo "$PRIVATE_KEY") -out "meta.sig" "meta"
+      #         echo "Signing packagesite.yaml in $dir"
+      #         openssl dgst -sha256 -sign <(echo "$PRIVATE_KEY") -out "packagesite.yaml.sig" "packagesite.yaml"
+
+      #         echo "Generating public key for $dir"
+      #         openssl rsa -in <(echo "$PRIVATE_KEY") -pubout -out "meta.pub"
+      #         openssl rsa -in <(echo "$PRIVATE_KEY") -pubout -out "packagesite.yaml.pub"
+              
+      #         echo "Creating packagesite.txz and packagesite.pkg in $dir"
+      #         tar -cJf "meta.txz" "meta" "meta.sig" "meta.pub"
+      #         tar -cJf "packagesite.txz" "packagesite.yaml" "packagesite.yaml.sig" "packagesite.yaml.pub"
+      #         tar -cvzf "packagesite.pkg" "packagesite.yaml" "packagesite.yaml.sig" "packagesite.yaml.pub"
+
+      #         echo "Adding files to git in $dir"
+      #         git add "meta.txz" "packagesite.pkg" "packagesite.txz"
+      #         cd ..
+      #       else
+      #         echo "No directory found."
+      #       fi
+      #     done
+
+      # - name: Commit
+      #   run: |
+      #     git commit -m " chore(auto): Add packagesite.pkg and packagesite.txz [skip ci]" || echo "No changes to commit"
+      #     echo "File added and committed."
+
+      # - name: Push changes
+      #   run: |
+      #     git push "https://${{ github.actor }}:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git" HEAD:${{ github.ref }}
+      #     echo "Changes pushed to repository."
